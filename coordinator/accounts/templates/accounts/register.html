@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Inscription{% endblock %}
+{% block content %}
+<section class="card auth">
+  <h1>Créer un compte</h1>
+  <form method="post" novalidate>
+    {% csrf_token %}
+    {% for field in form %}
+      <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+      {{ field }}
+      {% for error in field.errors %}<p class="field-error">{{ error }}</p>{% endfor %}
+      {% if field.help_text %}<div class="help">{{ field.help_text|safe }}</div>{% endif %}
+    {% endfor %}
+    <button type="submit" class="btn">Créer le compte</button>
+  </form>
+  <p class="muted">Déjà inscrit ? <a href="{% url 'accounts:login' %}">Se connecter</a></p>
+</section>
+{% endblock %}

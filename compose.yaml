@@ -1,0 +1,146 @@
+# NodeMesh cluster: one coordinator, one reconciler, three storage nodes.
+#
+# PostgreSQL is NOT defined here; choose one overlay:
+#   compose.dell.yaml  -> reuse the existing PostgreSQL container on the Dell (dev database)
+#   compose.test.yaml  -> throwaway PostgreSQL for isolated integration tests
+#
+#   docker compose --env-file .env.cluster -f compose.yaml -f compose.dell.yaml up -d --build
+#
+# Storage nodes publish no ports: only the coordinator can reach them, on the
+# internal network, and every request they accept must carry a valid HMAC.
+
+x-node-env: &node-env
+  NODE_DATA_DIR: /data
+  NODE_MAX_OBJECT_BYTES: ${NODEMESH_MAX_UPLOAD_BYTES:-104857600}
+  NODE_MIN_FREE_BYTES: ${NODE_MIN_FREE_BYTES:-268435456}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+x-node: &node
+  build:
+    context: .
+    dockerfile: docker/storage-node.Dockerfile
+  image: nodemesh/storage-node:${NODEMESH_VERSION:-dev}
+  restart: unless-stopped
+  networks: [internal]
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  stop_grace_period: 30s
+
+x-coordinator-env: &coordinator-env
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env.cluster}
+  DJANGO_DEBUG: "false"
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
+  DJANGO_HTTPS: ${DJANGO_HTTPS:-false}
+  DJANGO_TRUST_X_FORWARDED_PROTO: ${DJANGO_TRUST_X_FORWARDED_PROTO:-false}
+  POSTGRES_HOST: ${POSTGRES_HOST:-}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_DB: ${POSTGRES_DB:-}
+  POSTGRES_USER: ${POSTGRES_USER:-}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+  POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-prefer}
+  NODEMESH_REPLICATION_FACTOR: ${NODEMESH_REPLICATION_FACTOR:-3}
+  NODEMESH_WRITE_QUORUM: ${NODEMESH_WRITE_QUORUM:-2}
+  NODEMESH_MAX_UPLOAD_BYTES: ${NODEMESH_MAX_UPLOAD_BYTES:-104857600}
+  NODEMESH_NODES: node-1=http://node-1:8000,node-2=http://node-2:8000,node-3=http://node-3:8000
+  NODEMESH_NODE_CREDENTIALS: >-
+    node-1:${NODE_KEY_ID:-k1}:${NODE_1_HMAC_SECRET:?set NODE_1_HMAC_SECRET},node-2:${NODE_KEY_ID:-k1}:${NODE_2_HMAC_SECRET:?set NODE_2_HMAC_SECRET},node-3:${NODE_KEY_ID:-k1}:${NODE_3_HMAC_SECRET:?set NODE_3_HMAC_SECRET},node-4:${NODE_KEY_ID:-k1}:${NODE_4_HMAC_SECRET:?set NODE_4_HMAC_SECRET}
+  NODEMESH_ORPHAN_GRACE_SECONDS: ${NODEMESH_ORPHAN_GRACE_SECONDS:-3600}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: docker/coordinator.Dockerfile
+    image: nodemesh/coordinator:${NODEMESH_VERSION:-dev}
+    restart: unless-stopped
+    environment: *coordinator-env
+    ports:
+      # Bound to loopback by default. Set COORDINATOR_BIND=0.0.0.0 (or the LAN IP)
+      # deliberately, ideally behind a TLS reverse proxy.
+      - "${COORDINATOR_BIND:-127.0.0.1}:${COORDINATOR_PORT:-8080}:8000"
+    volumes:
+      - coordinator-spool:/var/lib/nodemesh/spool
+    networks: [edge, internal]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    depends_on:
+      node-1: {condition: service_healthy}
+      node-2: {condition: service_healthy}
+      node-3: {condition: service_healthy}
+
+  reconciler:
+    build:
+      context: .
+      dockerfile: docker/coordinator.Dockerfile
+    image: nodemesh/coordinator:${NODEMESH_VERSION:-dev}
+    restart: unless-stopped
+    command: ["python", "manage.py", "reconcile", "--loop", "--interval", "${NODEMESH_RECONCILE_INTERVAL:-30}"]
+    entrypoint: []
+    environment: *coordinator-env
+    volumes:
+      - coordinator-spool:/var/lib/nodemesh/spool
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    healthcheck: {disable: true}
+    depends_on:
+      coordinator: {condition: service_healthy}
+
+  node-1:
+    <<: *node
+    hostname: node-1
+    environment:
+      <<: *node-env
+      NODE_ID: node-1
+      NODE_HMAC_KEYS: ${NODE_KEY_ID:-k1}:${NODE_1_HMAC_SECRET:?set NODE_1_HMAC_SECRET}
+      DJANGO_ALLOWED_HOSTS: node-1,localhost,127.0.0.1
+    volumes: [node-1-data:/data]
+
+  node-2:
+    <<: *node
+    hostname: node-2
+    environment:
+      <<: *node-env
+      NODE_ID: node-2
+      NODE_HMAC_KEYS: ${NODE_KEY_ID:-k1}:${NODE_2_HMAC_SECRET:?set NODE_2_HMAC_SECRET}
+      DJANGO_ALLOWED_HOSTS: node-2,localhost,127.0.0.1
+    volumes: [node-2-data:/data]
+
+  node-3:
+    <<: *node
+    hostname: node-3
+    environment:
+      <<: *node-env
+      NODE_ID: node-3
+      NODE_HMAC_KEYS: ${NODE_KEY_ID:-k1}:${NODE_3_HMAC_SECRET:?set NODE_3_HMAC_SECRET}
+      DJANGO_ALLOWED_HOSTS: node-3,localhost,127.0.0.1
+    volumes: [node-3-data:/data]
+
+  # Spare node, same image: `docker compose --profile spare up -d node-4`, then
+  # `docker compose exec coordinator python manage.py register_node node-4 http://node-4:8000`.
+  node-4:
+    <<: *node
+    profiles: [spare]
+    hostname: node-4
+    environment:
+      <<: *node-env
+      NODE_ID: node-4
+      NODE_HMAC_KEYS: ${NODE_KEY_ID:-k1}:${NODE_4_HMAC_SECRET:?set NODE_4_HMAC_SECRET}
+      DJANGO_ALLOWED_HOSTS: node-4,localhost,127.0.0.1
+    volumes: [node-4-data:/data]
+
+networks:
+  edge: {}
+  internal:
+    internal: true  # no route to the outside world
+
+volumes:
+  coordinator-spool: {}
+  node-1-data: {}
+  node-2-data: {}
+  node-3-data: {}
+  node-4-data: {}

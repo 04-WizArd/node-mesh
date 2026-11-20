@@ -1,0 +1,27 @@
+# Overlay: use the PostgreSQL container that already runs on the Dell
+# (`postgres-distributed`). Nothing about that container is changed: the
+# coordinator and reconciler simply join its existing Docker network.
+#
+# Find the network name once with:
+#   docker inspect postgres-distributed --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+# and set POSTGRES_DOCKER_NETWORK in .env.cluster.
+#
+# Inside Docker, 127.0.0.1 is the container itself: the database is reached
+# by container name on the shared network, never through the Mac's SSH tunnel.
+
+services:
+  coordinator:
+    environment:
+      POSTGRES_HOST: ${POSTGRES_CONTAINER_HOST:-postgres-distributed}
+      POSTGRES_PORT: "5432"
+    networks: [edge, internal, database]
+  reconciler:
+    environment:
+      POSTGRES_HOST: ${POSTGRES_CONTAINER_HOST:-postgres-distributed}
+      POSTGRES_PORT: "5432"
+    networks: [internal, database]
+
+networks:
+  database:
+    external: true
+    name: ${POSTGRES_DOCKER_NETWORK:?set POSTGRES_DOCKER_NETWORK in .env.cluster}

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install ruff==0.17.6
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.12
+        env:
+          POSTGRES_USER: nodemesh_ci
+          POSTGRES_PASSWORD: ci-only-throwaway
+          POSTGRES_DB: nodemesh_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nodemesh_ci" --health-interval 2s --health-timeout 3s --health-retries 30
+    env:
+      TEST_POSTGRES_HOST: 127.0.0.1
+      TEST_POSTGRES_PORT: "5432"
+      TEST_POSTGRES_DB: nodemesh_ci
+      TEST_POSTGRES_USER: nodemesh_ci
+      TEST_POSTGRES_PASSWORD: ci-only-throwaway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - run: pip install -r requirements/dev.txt
+      - name: Shared protocol tests
+        run: cd shared && pytest -q
+      - name: Storage-node tests
+        run: cd storage-node && pytest -q
+      - name: Coordinator system checks and migration drift
+        run: |
+          cd coordinator
+          python manage.py check --settings=config.test_settings
+          python manage.py makemigrations --check --dry-run --settings=config.test_settings
+      - name: Coordinator tests (PostgreSQL, real storage-node processes)
+        run: cd coordinator && pytest -q
+
+  docker-smoke:
+    runs-on: ubuntu-24.04
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate throwaway cluster configuration
+        run: python3 scripts/init_env.py --cluster
+      - name: Start isolated cluster
+        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml up -d --build --wait --wait-timeout 180
+      - name: Failure demonstration (upload, node down, verified read, re-replication)
+        run: python3 scripts/cluster_demo.py --create-user --compose "docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml"
+      - name: Logs on failure
+        if: failure()
+        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml logs --no-color --tail 200
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml down -v

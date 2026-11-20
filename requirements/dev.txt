@@ -1,0 +1,11 @@
+# Development and CI: both projects, the shared package (editable) and tooling.
+# Run from the repository root:  pip install -r requirements/dev.txt
+-r coordinator.txt
+-r storage-node.txt
+-e ./shared
+pytest==9.2.0
+pytest-django==4.14.0
+iniconfig==2.3.1
+pluggy==1.7.0
+Pygments==2.21.0
+ruff==0.17.6

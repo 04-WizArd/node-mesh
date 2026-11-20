@@ -1,0 +1,7 @@
+# Runtime dependencies of the storage node (exact pins; update deliberately).
+# Install the shared protocol package as well:  pip install ./shared
+Django==5.2.19
+asgiref==3.13.0
+sqlparse==0.6.1
+gunicorn==23.0.0
+packaging==26.3

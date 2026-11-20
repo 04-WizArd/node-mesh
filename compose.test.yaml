@@ -1,0 +1,46 @@
+# Overlay: fully isolated integration-test stack (CI, or a dry run on the Dell).
+#
+#   docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml up -d --build --wait
+#
+# * Separate project name => separate containers, networks and volumes; it can
+#   run next to the real cluster without touching it.
+# * PostgreSQL keeps its data in tmpfs and publishes no port, so it can never
+#   collide with the existing PostgreSQL on the host or outlive the test run.
+
+name: nodemesh-test
+
+services:
+  postgres:
+    image: postgres:17.12
+    environment:
+      POSTGRES_DB: nodemesh_test
+      POSTGRES_USER: nodemesh_test
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD:?set TEST_POSTGRES_PASSWORD (any throwaway value)}
+    tmpfs: [/var/lib/postgresql/data]
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodemesh_test -d nodemesh_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  coordinator:
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: nodemesh_test
+      POSTGRES_USER: nodemesh_test
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD}
+      NODEMESH_AUTO_MIGRATE: "true"
+      NODEMESH_ORPHAN_GRACE_SECONDS: "0"
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  reconciler:
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: nodemesh_test
+      POSTGRES_USER: nodemesh_test
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD}
+      NODEMESH_ORPHAN_GRACE_SECONDS: "0"

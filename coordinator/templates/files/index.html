@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Mes fichiers{% endblock %}
+{% block content %}
+<h1>Mes fichiers</h1>
+
+<section class="card" aria-labelledby="upload-title">
+  <h2 id="upload-title">Téléverser</h2>
+  <label class="dropzone" id="dropzone" for="file-input">
+    <span>Glissez des fichiers ici ou <u>parcourez</u></span>
+    <span class="muted" id="limit-hint"></span>
+    <input type="file" id="file-input" multiple class="visually-hidden">
+  </label>
+  <ul class="uploads" id="uploads" aria-live="polite"></ul>
+</section>
+
+<section class="card" aria-labelledby="files-title">
+  <div class="card-head">
+    <h2 id="files-title">Fichiers stockés</h2>
+    <button type="button" class="btn btn-ghost" id="refresh">Actualiser</button>
+  </div>
+  <p class="muted" id="files-empty" hidden>Aucun fichier pour le moment.</p>
+  <p class="alert" id="files-error" role="alert" hidden></p>
+  <div class="table-wrap">
+    <table id="files-table" hidden>
+      <thead>
+        <tr><th scope="col">Nom</th><th scope="col">Taille</th><th scope="col">Répliques</th><th scope="col">Ajouté le</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+      </thead>
+      <tbody id="files-body"></tbody>
+    </table>
+  </div>
+</section>
+
+{% if user.is_staff %}
+<section class="card" aria-labelledby="nodes-title">
+  <div class="card-head">
+    <h2 id="nodes-title">État du cluster</h2>
+  </div>
+  <ul class="nodes" id="nodes"></ul>
+</section>
+{% endif %}
+
+<div id="config"
+     data-files-url="{% url 'files:api-files' %}"
+     data-nodes-url="{% if user.is_staff %}{% url 'files:api-nodes' %}{% endif %}"
+     data-max-upload="{{ max_upload_bytes }}"
+     hidden></div>
+{% endblock %}
+{% block scripts %}<script src="{% static 'js/files.js' %}" defer></script>{% endblock %}
