@@ -44,7 +44,8 @@ The `test_cluster.py` scenarios are:
 - re-replication to a spare after a node turns suspect, then recovery;
 - coordinator crash resolved from node state;
 - orphan deletion and lost-acknowledgement adoption;
-- delete and purge; reconciler idempotency.
+- delete and purge; reconciler idempotency;
+- a query budget per upload and download (guards against N+1 regressions).
 
 ## Docker smoke test
 

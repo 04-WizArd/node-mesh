@@ -137,8 +137,8 @@ Output from a run against real node processes:
 ## Tests
 
 ```bash
-make test    # 127 tests: protocol, storage engine, node API, coordinator rules, web security,
-             # and 19 distributed scenarios against real storage-node processes
+make test    # 128 tests: protocol, storage engine, node API, coordinator rules, web security,
+             # and 20 distributed scenarios against real storage-node processes
 ```
 
 The tests never touch the development database (see [testing.md](docs/testing.md)).
@@ -147,19 +147,24 @@ The tests never touch the development database (see [testing.md](docs/testing.md
 
 These numbers come from `scripts/benchmark.py` with 8 files per row, and are
 **not** capacity claims. The setup was:
-- coordinator (gunicorn, 2 workers × 4 threads) and 3 nodes on one Apple M5
-  laptop, over loopback;
-- SQLite metadata;
+- coordinator (gunicorn, 2 workers × 4 threads) and 3 storage nodes on one
+  Apple M5 laptop, over loopback;
+- metadata in PostgreSQL 17 on a separate Linux server, reached through an SSH
+  tunnel (about 4.6 ms per query round trip);
 - macOS `fsync`, which does not flush the drive cache.
 
-Real disks, PostgreSQL and a network will be slower.
-
-| Size | Concurrency | Upload MiB/s (3 copies) | Upload p95 | Verified download MiB/s | Download p95 |
+| Size | Concurrency | Upload MiB/s (3 copies) | Upload p50 / p95 | Verified download MiB/s | Download p50 / p95 |
 |---:|---:|---:|---:|---:|---:|
-| 1 MiB | 1 | 89 | 0.01 s | 206 | 0.01 s |
-| 1 MiB | 4 | 92 | 0.08 s | 404 | 0.01 s |
-| 10 MiB | 4 | 397 | 0.11 s | 1821 | 0.03 s |
-| 50 MiB | 4 | 531 | 0.42 s | 2808 | 0.07 s |
+| 0.1 MiB | 1 | 1.0 | 0.10 / 0.11 s | 2.1 | 0.04 / 0.07 s |
+| 1 MiB | 4 | 34 | 0.10 / 0.13 s | 72 | 0.04 / 0.06 s |
+| 10 MiB | 4 | 190 | 0.21 / 0.22 s | 694 | 0.06 / 0.06 s |
+| 50 MiB | 4 | 290 | 0.69 / 0.77 s | 1858 | 0.10 / 0.12 s |
+
+Small transfers are dominated by database round trips. An upload costs 14
+queries, including session and authentication. It cost 37 before replica rows
+were created in bulk with the file row and transfer outcomes were batched. A
+verified download costs 5 queries. With the database on the same host or
+network as the coordinator (the Docker deployment), round trips are far cheaper.
 
 Known bottlenecks:
 - the coordinator relays every byte, both up and down;
