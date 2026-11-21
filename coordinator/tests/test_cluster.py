@@ -369,3 +369,17 @@ def test_reconcile_is_idempotent(api, cluster):
     assert second.get("replicas_created", 0) == 0
     assert second.get("replicas_purged", 0) == 0
     assert second.get("nodes_healthy") == 3
+
+
+def test_request_query_budget(api, cluster):
+    """Guards the batched bookkeeping: database round trips dominate small transfers."""
+    from django.test.utils import CaptureQueriesContext
+
+    upload(api, b"warm-up")  # nodes are now healthy and freshly seen
+    with CaptureQueriesContext(connection) as up:
+        response = upload(api, b"x" * 1000)
+    assert response.status_code == 201
+    with CaptureQueriesContext(connection) as down:
+        assert body(download(api, response.json()["file"]["id"])) == b"x" * 1000
+    assert len(up.captured_queries) <= 16, len(up.captured_queries)  # 14 measured; was 37
+    assert len(down.captured_queries) <= 6, len(down.captured_queries)  # 5 measured

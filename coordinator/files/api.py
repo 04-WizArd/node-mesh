@@ -152,9 +152,8 @@ def _upload(request: HttpRequest) -> HttpResponse:
             stored=result.stored,
             required=settings.NODEMESH_WRITE_QUORUM,
         )
-    file = quorum.with_replica_counts(File.objects.filter(pk=result.file.pk)).get()
     return JsonResponse(
-        {"file": serialize_file(file), "replayed": result.replayed},
+        {"file": serialize_file(result.file), "replayed": result.replayed},
         status=200 if result.replayed else 201,
     )
 

@@ -30,7 +30,7 @@ from cluster.client import ClientFactory, client_for
 from cluster.placement import write_candidates
 from files.models import File
 from files.services import quorum
-from files.services.replication import replicate
+from files.services.replication import prepare_replicas, replicate
 from files.spool import SpooledFile
 
 logger = logging.getLogger(__name__)
@@ -59,29 +59,38 @@ class UploadResult:
         return self.file.status == File.Status.AVAILABLE
 
 
+def _with_counts(file_id) -> File:
+    """Reload a file annotated with ``stored_replicas`` and ``countable_replicas``."""
+    return quorum.with_replica_counts(File.objects.filter(pk=file_id)).get()
+
+
 def _replay(existing: File, spooled: SpooledFile) -> UploadResult:
     if existing.sha256 != spooled.sha256 or existing.size != spooled.size:
         raise IdempotencyConflict("the idempotency key was used for different content")
     if existing.status == File.Status.PENDING:
         raise UploadInProgress("an upload with this idempotency key is still in progress")
-    stored = quorum.with_replica_counts(File.objects.filter(pk=existing.pk)).get().stored_replicas
-    return UploadResult(file=existing, stored=stored, replayed=True)
+    file = _with_counts(existing.pk)
+    return UploadResult(file=file, stored=file.stored_replicas, replayed=True)
 
 
 def finalize(file: File, *, write_quorum: int) -> File:
-    """Decide AVAILABLE/FAILED from the replica rows. Safe to call repeatedly."""
+    """Decide AVAILABLE/FAILED from the replica rows. Safe to call repeatedly.
+
+    Returns the file annotated with ``stored_replicas``/``countable_replicas``.
+    """
     with transaction.atomic():
         locked = File.objects.select_for_update().get(pk=file.pk)
-        if locked.status != File.Status.PENDING:
-            return locked
-        stored = quorum.with_replica_counts(File.objects.filter(pk=file.pk)).get().stored_replicas
-        if quorum.quorum_met(stored, write_quorum):
-            locked.status = File.Status.AVAILABLE
-        else:
-            locked.status = File.Status.FAILED
-            locked.idempotency_key = None  # allow a retry with the same key
-        locked.save(update_fields=["status", "idempotency_key", "updated_at"])
-        return locked
+        counted = _with_counts(file.pk)
+        if locked.status == File.Status.PENDING:
+            if quorum.quorum_met(counted.stored_replicas, write_quorum):
+                locked.status = File.Status.AVAILABLE
+            else:
+                locked.status = File.Status.FAILED
+                locked.idempotency_key = None  # allow a retry with the same key
+            locked.save(update_fields=["status", "idempotency_key", "updated_at"])
+    locked.stored_replicas = counted.stored_replicas
+    locked.countable_replicas = counted.countable_replicas
+    return locked
 
 
 def upload(
@@ -102,8 +111,9 @@ def upload(
             return _replay(existing, spooled)
 
     candidates = write_candidates(spooled.size)
+    first_targets = candidates[:replication_factor] if len(candidates) >= write_quorum else []
     try:
-        with transaction.atomic():
+        with transaction.atomic():  # the file and its PENDING replica rows appear together
             file = File.objects.create(
                 owner=owner,
                 original_name=original_name,
@@ -113,6 +123,7 @@ def upload(
                 desired_replicas=replication_factor,
                 idempotency_key=idempotency_key or None,
             )
+            prepared = prepare_replicas(file, first_targets) if first_targets else {}
     except IntegrityError:
         # A concurrent request with the same idempotency key won the race.
         existing = File.objects.filter(owner=owner, idempotency_key=idempotency_key).first()
@@ -131,12 +142,12 @@ def upload(
             candidates,
             wanted=replication_factor,
             client_factory=client_factory,
+            prepared=prepared,
         )
 
     file = finalize(file, write_quorum=write_quorum)
-    stored = quorum.with_replica_counts(File.objects.filter(pk=file.pk)).get().stored_replicas
     logger.info(
         "upload finished",
-        extra={"file_id": str(file.id), "status": file.status, "stored": stored},
+        extra={"file_id": str(file.id), "status": file.status, "stored": file.stored_replicas},
     )
-    return UploadResult(file=file, stored=stored)
+    return UploadResult(file=file, stored=file.stored_replicas)
