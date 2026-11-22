@@ -19,15 +19,26 @@ RUN pip install /opt/nodemesh-shared
 
 COPY coordinator/ /app/
 COPY docker/coordinator-entrypoint.sh /usr/local/bin/nodemesh-entrypoint
+# Code is owned by root and read-only for the runtime user. COPY keeps the
+# permission bits of the build context, so a checkout made with a restrictive
+# umask (e.g. 077 -> 0600 files) would otherwise ship files the runtime user
+# cannot read. Normalise the whole tree once: a+rX = readable, directories
+# traversable (execute bits kept only where already set); go-w = not writable.
 # collectstatic only needs importable settings; these values exist solely for the build.
 RUN DJANGO_SECRET_KEY=collectstatic-only POSTGRES_HOST=unused POSTGRES_DB=unused \
     POSTGRES_USER=unused POSTGRES_PASSWORD=unused \
     python manage.py collectstatic --noinput --verbosity 0 \
+ && chmod -R a+rX,go-w /app \
+ && chmod 0755 /usr/local/bin/nodemesh-entrypoint \
  && mkdir -p /var/lib/nodemesh/spool \
- && chown -R nodemesh:nodemesh /var/lib/nodemesh \
- && chmod 0755 /usr/local/bin/nodemesh-entrypoint
+ && chown -R nodemesh:nodemesh /var/lib/nodemesh
 
 USER nodemesh
+# Fail the build, not the deployment, if the runtime user cannot read its code
+# or import the shared package.
+RUN unreadable="$(find /app ! -readable -print)" \
+ && if [ -n "$unreadable" ]; then echo "unreadable by $(id -un): $unreadable" >&2; exit 1; fi \
+ && python -c "import django, nodemesh_common.env, nodemesh_common.logging, nodemesh_common.signing"
 EXPOSE 8000
 # Readiness, not just liveness: healthy only while the database is reachable.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \

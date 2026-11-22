@@ -69,6 +69,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate throwaway cluster configuration
         run: make cluster-env
+      - name: Simulate a checkout made with a restrictive umask (077)
+        # Regression guard: images must not depend on the build host's file modes.
+        run: chmod -R go-rwx coordinator storage-node shared docker requirements
       - name: Validate the test stack's Compose configuration
         run: >-
           env NODEMESH_VERSION=test docker compose --env-file .env.cluster -p nodemesh-test

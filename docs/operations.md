@@ -222,6 +222,7 @@ them elsewhere if you need a longer history.
 | Build fails with an image tag "already exists" or a similar conflict | Several services built the same image concurrently (fixed: only `coordinator` and `node-1` build). Pull the latest code and run `make cluster-build` |
 | `up --wait` fails: a container "has no healthcheck configured" | The reconciler used to disable its healthcheck (fixed: heartbeat healthcheck). Pull, `make cluster-build`, `make cluster-up` |
 | `cluster-up`: "pull access denied" / "No such image" for `nodemesh/...` | Images not built yet: `make cluster-build` |
+| A container exits with `PermissionError: [Errno 13] Permission denied: '/app/...'` | Images built before the fix inherited restrictive file modes from the checkout (e.g. `umask 077`). Current images normalise permissions and refuse to build if the runtime user cannot read its code: pull, then `make cluster-build` and `make cluster-up` |
 | The coordinator exits: "database schema is not up to date, or the database is unreachable" | Run `make cluster-migrate-plan` and `make cluster-migrate`. Otherwise check `POSTGRES_*`, `POSTGRES_DOCKER_NETWORK` and that the PostgreSQL container is running |
 | `cluster-config` or `cluster-up`: "set POSTGRES_… in .env.cluster" | A required value is still `<fill-in>` or missing |
 | "network … declared as external, but could not be found" | `POSTGRES_DOCKER_NETWORK` does not match the PostgreSQL container's network (`docker inspect`, see deployment) |

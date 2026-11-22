@@ -19,12 +19,23 @@ RUN pip install /opt/nodemesh-shared
 
 COPY storage-node/ /app/
 COPY docker/storage-node-entrypoint.sh /usr/local/bin/nodemesh-entrypoint
-# The volume is initialised from this directory, so it inherits the ownership.
-RUN mkdir -p /data && chown nodemesh:nodemesh /data && chmod 0700 /data \
- && chmod 0755 /usr/local/bin/nodemesh-entrypoint
+# Code is owned by root and read-only for the runtime user. COPY keeps the
+# permission bits of the build context, so a checkout made with a restrictive
+# umask (e.g. 077 -> 0600 files) would otherwise ship files the runtime user
+# cannot read. Normalise the whole tree once: a+rX = readable, directories
+# traversable (execute bits kept only where already set); go-w = not writable.
+# The volume is initialised from /data, so it inherits that ownership.
+RUN chmod -R a+rX,go-w /app \
+ && chmod 0755 /usr/local/bin/nodemesh-entrypoint \
+ && mkdir -p /data && chown nodemesh:nodemesh /data && chmod 0700 /data
 VOLUME ["/data"]
 
 USER nodemesh
+# Fail the build, not the deployment, if the runtime user cannot read its code
+# or import the shared package.
+RUN unreadable="$(find /app ! -readable -print)" \
+ && if [ -n "$unreadable" ]; then echo "unreadable by $(id -un): $unreadable" >&2; exit 1; fi \
+ && python -c "import django, nodemesh_common.env, nodemesh_common.logging, nodemesh_common.signing"
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
   CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=4)"]
