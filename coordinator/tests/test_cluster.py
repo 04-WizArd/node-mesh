@@ -402,3 +402,23 @@ def test_mass_orphan_deletion_is_refused(api, cluster, settings):
     assert report.get("orphan_gc_refused", 0) >= 1
     assert all(cluster["node-3"].has(oid) for oid in unknown)  # nothing deleted
     assert cluster["node-3"].has(tracked)
+
+
+def test_lost_node_volume_is_detected_and_repaired_after_rescan(api, cluster):
+    """A node that restarts with an empty volume looks healthy; a rescan finds the loss."""
+    import io
+    import shutil
+
+    from django.core.management import call_command
+
+    file_id = upload(api, DATA).json()["file"]["id"]
+    cluster["node-2"].stop()
+    shutil.rmtree(cluster["node-2"].object_path(file_id).parent)  # simulate a lost volume
+    cluster["node-2"].start()
+
+    reconcile()
+    assert replica_states(file_id)["node-2"] == "stored"  # not yet noticed: verified at upload
+    call_command("rescan_node", "node-2", stdout=io.StringIO())
+    reconcile()  # scrub -> missing -> forgotten -> re-replicated
+    assert replica_states(file_id)["node-2"] == "stored"
+    assert cluster["node-2"].object_path(file_id).read_bytes() == DATA

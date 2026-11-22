@@ -8,6 +8,7 @@ import pytest
 from django.core.management import CommandError, call_command
 
 from cluster.models import StorageNode
+from files.models import File
 
 
 @pytest.mark.django_db
@@ -52,3 +53,16 @@ def test_register_from_env_is_all_or_nothing(monkeypatch):
     with pytest.raises(CommandError):
         call_command("register_node", from_env=True, stdout=StringIO())
     assert not StorageNode.objects.filter(node_id="node-1").exists()  # nothing partially applied
+
+
+@pytest.mark.django_db
+def test_cluster_status_reports_nodes_and_files(user):
+    StorageNode.objects.create(node_id="node-1", base_url="http://node-1:8000", health="healthy")
+    File.objects.create(
+        owner=user, original_name="a", size=1, sha256="0" * 64, desired_replicas=3, status="available"
+    )
+    out = StringIO()
+    call_command("cluster_status", stdout=out)
+    text = out.getvalue()
+    assert "node-1" in text and "healthy" in text
+    assert "available=1" in text and "under-replicated=1" in text
