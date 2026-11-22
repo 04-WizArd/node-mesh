@@ -335,6 +335,9 @@ def test_interrupted_upload_is_resolved_from_node_state(user, cluster, settings)
 
 def test_orphans_are_deleted_and_lost_acknowledgements_adopted(api, cluster, settings):
     settings.NODEMESH_ORPHAN_GRACE_SECONDS = 0
+    # Node volumes persist across tests while each test's database is rolled
+    # back, so most objects look unknown here; lift the mass-deletion guard.
+    settings.NODEMESH_ORPHAN_GC_MAX_FRACTION = 1.0
     # 1) Bytes on a node that no metadata references.
     orphan_id = uuid.uuid4()
     spool = Path(settings.NODEMESH_SPOOL_DIR) / "orphan.bin"
@@ -383,3 +386,19 @@ def test_request_query_budget(api, cluster):
         assert body(download(api, response.json()["file"]["id"])) == b"x" * 1000
     assert len(up.captured_queries) <= 16, len(up.captured_queries)  # 14 measured; was 37
     assert len(down.captured_queries) <= 6, len(down.captured_queries)  # 5 measured
+
+
+def test_mass_orphan_deletion_is_refused(api, cluster, settings):
+    """A coordinator pointed at the wrong (e.g. empty) database must not wipe the nodes."""
+    settings.NODEMESH_ORPHAN_GRACE_SECONDS = 0
+    spool = Path(settings.NODEMESH_SPOOL_DIR) / "unknown.bin"
+    spool.write_bytes(b"unknown")
+    unknown = [uuid.uuid4() for _ in range(12)]
+    for oid in unknown:
+        client_for(node("node-3")).put_object(oid, spool, 7, sha(b"unknown"))
+    tracked = upload(api, DATA).json()["file"]["id"]
+
+    report = reconcile()
+    assert report.get("orphan_gc_refused", 0) >= 1
+    assert all(cluster["node-3"].has(oid) for oid in unknown)  # nothing deleted
+    assert cluster["node-3"].has(tracked)

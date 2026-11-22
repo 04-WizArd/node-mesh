@@ -307,22 +307,54 @@ class Reconciler:
         )
         for node in nodes:
             client = self._client(node)
-            after = None
+            listed, doomed, after = 0, [], None
             while True:
                 try:
                     objects, after = client.list_objects(after=after, limit=500)
                 except NodeError as exc:
                     self._node_failed(node, exc)
+                    doomed = []  # incomplete inventory: decide nothing this cycle
                     break
-                self._reconcile_listing(node, client, objects, grace)
+                listed += len(objects)
+                doomed += self._classify_listing(node, objects, grace)
                 if not after:
                     break
+            if doomed and not self._orphan_deletion_is_plausible(node, len(doomed), listed):
+                continue
+            for oid in doomed:
+                try:
+                    client.delete_object(oid)
+                except NodeError as exc:
+                    self._node_failed(node, exc)
+                    break
+                self.report["orphans_deleted"] += 1
+                logger.warning("orphan object deleted", extra={"node_id": node.node_id, "object_id": oid})
 
-    def _reconcile_listing(self, node, client, objects: list[dict], grace: timedelta) -> None:
+    def _orphan_deletion_is_plausible(self, node: StorageNode, doomed: int, listed: int) -> bool:
+        """Safety net against a misconfigured database.
+
+        Genuine orphans are rare (interrupted writes, lost deletes). If a large
+        share of a node's objects is unknown, the coordinator is far more likely
+        pointed at the wrong, empty or restored database than looking at
+        garbage, so nothing is deleted and an operator must look.
+        """
+        limit = max(10, int(listed * settings.NODEMESH_ORPHAN_GC_MAX_FRACTION))
+        if doomed <= limit:
+            return True
+        self.report["orphan_gc_refused"] += 1
+        logger.error(
+            "orphan deletion refused: too many unknown objects (wrong database?)",
+            extra={"node_id": node.node_id, "unknown": doomed, "listed": listed, "limit": limit},
+        )
+        return False
+
+    def _classify_listing(self, node, objects: list[dict], grace: timedelta) -> list[str]:
+        """Adopt valid untracked copies; return the ids that are garbage."""
         ids = [o["object_id"] for o in objects]
         files = {str(f.id): f for f in File.objects.filter(id__in=ids)}
         replicas = {str(r.file_id): r for r in Replica.objects.filter(node=node, file_id__in=ids)}
         now = timezone.now()
+        doomed: list[str] = []
         for obj in objects:
             oid = obj["object_id"]
             file, replica = files.get(oid), replicas.get(oid)
@@ -353,13 +385,8 @@ class Reconciler:
                     continue
             if file is not None and file.status == File.Status.PENDING:
                 continue
-            try:
-                client.delete_object(oid)
-            except NodeError as exc:
-                self._node_failed(node, exc)
-                return
-            self.report["orphans_deleted"] += 1
-            logger.warning("orphan object deleted", extra={"node_id": node.node_id, "object_id": oid})
+            doomed.append(oid)
+        return doomed
 
 
 def _parse_time(value: str | None) -> datetime | None:
