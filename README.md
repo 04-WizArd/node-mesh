@@ -26,6 +26,9 @@ Every item below is implemented and covered by automated tests.
 - **Quorum replication.** RF = 3 and W = 2 by default. Transfers run in
   parallel with bounded timeouts. Under-replicated files are reported, never
   hidden. Below quorum the upload fails explicitly (503).
+- **Secure previews.** Images, PDF and text are shown inline, after the same
+  verified read as downloads. The type is decided from the bytes, scripts are
+  never rendered, and every request is authorised.
 - **Verified reads with fallback.** Corrupt or missing replicas are detected,
   recorded and skipped. Clients never receive unverified bytes.
 - **Failure detection.** Node health is `healthy` → `unreachable` → `suspect`.
@@ -171,8 +174,8 @@ Output from a run against real node processes:
 ## Tests
 
 ```bash
-make test    # 135 tests: protocol, storage engine, node API, coordinator rules, web security,
-             # and 22 distributed scenarios against real storage-node processes
+make test    # 169 tests: protocol, storage engine, node API, coordinator rules, web security,
+             # and 27 distributed scenarios against real storage-node processes
 ```
 
 The tests never touch the development database (see [testing.md](docs/testing.md)).
