@@ -1,13 +1,21 @@
 # NodeMesh cluster: one coordinator, one reconciler, three storage nodes.
+# Use the Makefile (`make help`); see docs/deployment.md.
 #
 # PostgreSQL is NOT defined here; choose one overlay:
-#   compose.dell.yaml  -> reuse the existing PostgreSQL container on the Dell (dev database)
+#   compose.external-db.yaml -> an existing PostgreSQL container, joined via its Docker network
 #   compose.test.yaml  -> throwaway PostgreSQL for isolated integration tests
 #
-#   docker compose --env-file .env.cluster -f compose.yaml -f compose.dell.yaml up -d --build
+# Images: each image has exactly ONE service that builds it (coordinator,
+# node-1); the other services reuse the local image (pull_policy: never), so
+# a build never races on the same tag. Build first (`make cluster-build`).
 #
 # Storage nodes publish no ports: only the coordinator can reach them, on the
 # internal network, and every request they accept must carry a valid HMAC.
+
+# Bounded container logs (Docker's json-file driver does not rotate by default).
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
 
 x-node-env: &node-env
   NODE_DATA_DIR: /data
@@ -16,11 +24,10 @@ x-node-env: &node-env
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
 x-node: &node
-  build:
-    context: .
-    dockerfile: docker/storage-node.Dockerfile
   image: nodemesh/storage-node:${NODEMESH_VERSION:-dev}
+  pull_policy: never  # built locally by node-1; never looked up in a registry
   restart: unless-stopped
+  logging: *logging
   networks: [internal]
   read_only: true
   tmpfs: [/tmp]
@@ -31,7 +38,8 @@ x-node: &node
 x-coordinator-env: &coordinator-env
   DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?set DJANGO_SECRET_KEY in .env.cluster}
   DJANGO_DEBUG: "false"
-  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  # Loopback is always allowed: the container healthcheck calls http://127.0.0.1:8000.
+  DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,${DJANGO_ALLOWED_HOSTS:-}
   DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-}
   DJANGO_HTTPS: ${DJANGO_HTTPS:-false}
   DJANGO_TRUST_X_FORWARDED_PROTO: ${DJANGO_TRUST_X_FORWARDED_PROTO:-false}
@@ -57,6 +65,7 @@ services:
       dockerfile: docker/coordinator.Dockerfile
     image: nodemesh/coordinator:${NODEMESH_VERSION:-dev}
     restart: unless-stopped
+    logging: *logging
     environment: *coordinator-env
     ports:
       # Bound to loopback by default. Set COORDINATOR_BIND=0.0.0.0 (or the LAN IP)
@@ -73,12 +82,19 @@ services:
       node-3: {condition: service_healthy}
 
   reconciler:
-    build:
-      context: .
-      dockerfile: docker/coordinator.Dockerfile
-    image: nodemesh/coordinator:${NODEMESH_VERSION:-dev}
+    image: nodemesh/coordinator:${NODEMESH_VERSION:-dev}  # built by the coordinator service
+    pull_policy: never
     restart: unless-stopped
-    command: ["python", "manage.py", "reconcile", "--loop", "--interval", "${NODEMESH_RECONCILE_INTERVAL:-30}"]
+    logging: *logging
+    command:
+      - python
+      - manage.py
+      - reconcile
+      - --loop
+      - --interval
+      - "${NODEMESH_RECONCILE_INTERVAL:-30}"
+      - --heartbeat-file
+      - /tmp/nodemesh/reconciler.heartbeat
     entrypoint: []
     environment: *coordinator-env
     volumes:
@@ -86,12 +102,29 @@ services:
     networks: [internal]
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    healthcheck: {disable: true}
+    # Healthy while cycles keep succeeding: the heartbeat is touched only after a
+    # successful cycle (database reachable, lock handled), so a reconciler that
+    # keeps failing turns unhealthy instead of failing silently.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,sys,time; p='/tmp/nodemesh/reconciler.heartbeat';
+          sys.exit(0 if os.path.exists(p) and time.time() - os.path.getmtime(p) < ${NODEMESH_RECONCILER_MAX_SILENCE:-300} else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
     depends_on:
       coordinator: {condition: service_healthy}
 
   node-1:
     <<: *node
+    build:  # the only service that builds the storage-node image
+      context: .
+      dockerfile: docker/storage-node.Dockerfile
+    pull_policy: missing
     hostname: node-1
     environment:
       <<: *node-env
@@ -120,8 +153,8 @@ services:
       DJANGO_ALLOWED_HOSTS: node-3,localhost,127.0.0.1
     volumes: [node-3-data:/data]
 
-  # Spare node, same image: `docker compose --profile spare up -d node-4`, then
-  # `docker compose exec coordinator python manage.py register_node node-4 http://node-4:8000`.
+  # Spare node, same image: `make cluster-spare-up`, then register it
+  # (see docs/operations.md, "Adding a storage node").
   node-4:
     <<: *node
     profiles: [spare]

@@ -29,7 +29,8 @@ RUN DJANGO_SECRET_KEY=collectstatic-only POSTGRES_HOST=unused POSTGRES_DB=unused
 
 USER nodemesh
 EXPOSE 8000
+# Readiness, not just liveness: healthy only while the database is reachable.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4)"]
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=4)"]
 ENTRYPOINT ["nodemesh-entrypoint"]
 CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3", "--threads", "4", "--timeout", "300", "--graceful-timeout", "30", "--access-logfile", "-"]
