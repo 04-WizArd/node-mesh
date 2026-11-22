@@ -32,6 +32,15 @@ clients; every byte goes through the coordinator.
   `nosniff`, so uploaded HTML or SVG never renders in the app's origin.
 - Regression tests: `test_no_html_sinks_in_frontend_code`, `test_no_inline_scripts_in_templates`.
 
+**Previews.**
+- Inline previews are limited to JPEG, PNG, WebP, PDF and UTF-8 text.
+- The format is decided from the verified bytes, not from the client-declared type.
+- Text, HTML included, is served as `text/plain`.
+- Each preview response carries its own restrictive CSP (sandboxed for images
+  and text). PDFs are opened top-level rather than framed.
+- Same-origin PDFs rely on the browser's built-in viewer isolating any document
+  JavaScript. Serving previews from a separate origin would be the stronger option.
+
 **Input handling.**
 - Upload size is checked from `Content-Length` *and* from the bytes actually received.
 - Chunked uploads and multipart bodies are refused.

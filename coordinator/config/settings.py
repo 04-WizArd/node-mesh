@@ -170,6 +170,9 @@ NODEMESH_NODE_READ_TIMEOUT = env_float("NODEMESH_NODE_READ_TIMEOUT", 30.0)
 NODEMESH_NODE_WRITE_ATTEMPTS = env_int("NODEMESH_NODE_WRITE_ATTEMPTS", 2, minimum=1)
 NODEMESH_MAX_PARALLEL_TRANSFERS = env_int("NODEMESH_MAX_PARALLEL_TRANSFERS", 3, minimum=1)
 NODEMESH_TRANSFER_POOL_SIZE = env_int("NODEMESH_TRANSFER_POOL_SIZE", 16, minimum=1)
+# Inline previews (images, PDF, UTF-8 text); larger files are download-only.
+NODEMESH_PREVIEW_MAX_BYTES = env_int("NODEMESH_PREVIEW_MAX_BYTES", 25 * 1024 * 1024, minimum=0)
+NODEMESH_PREVIEW_TEXT_MAX_BYTES = env_int("NODEMESH_PREVIEW_TEXT_MAX_BYTES", 1024 * 1024, minimum=0)
 
 # --- NodeMesh: failure detection and reconciliation ----------------------------------
 NODEMESH_SUSPECT_AFTER_FAILURES = env_int("NODEMESH_SUSPECT_AFTER_FAILURES", 3, minimum=1)

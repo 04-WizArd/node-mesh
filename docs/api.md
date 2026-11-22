@@ -55,9 +55,15 @@ curl -b cookies.txt -H "X-CSRFToken: $TOKEN" -H "X-Filename: rapport%20final.pdf
   "status": "available",
   "created_at": "2026-11-20T17:03:12.512+00:00",
   "replication": {"desired": 3, "stored": 3, "healthy": 3, "under_replicated": false},
-  "download_url": "/api/v1/files/3f0c…/content"
+  "download_url": "/api/v1/files/3f0c…/content",
+  "preview": {"kind": "pdf", "unavailable_reason": null, "url": "/api/v1/files/3f0c…/preview"}
 }
 ```
+
+`preview.kind` (`image`, `pdf`, `text` or `null`) is derived from metadata
+only: it tells a client which previews to offer. `unavailable_reason` is
+`preview_unsupported` or `preview_too_large` when `kind` is `null`. The server
+re-checks the actual bytes on every preview request.
 
 The replication fields mean:
 - `stored`: copies marked stored;
@@ -71,6 +77,7 @@ The replication fields mean:
 | `GET /api/v1/files/?limit=50&offset=0` | Your available files, newest first (`limit` ≤ 200) | `200 {"files": [...], "count", "limit", "offset"}` |
 | `GET /api/v1/files/{id}/` | One file | `200 {"file": File}`, `404` |
 | `GET /api/v1/files/{id}/content` | Verified download (attachment, `X-Content-SHA256`, `Cache-Control: private, no-store`) | `200`, `404`, `503 no_replica_available` |
+| `GET /api/v1/files/{id}/preview` | Verified inline preview (see below) | `200`, `404`, `413 preview_too_large`, `415 preview_unsupported`, `503 no_replica_available` |
 | `DELETE /api/v1/files/{id}/` | Delete (copies are purged by the reconciler) | `204`, `404` |
 | `GET /api/v1/cluster/nodes/` | Node health and capacity (**staff only**) | `200`, `403` |
 | `GET /healthz` | Liveness | `200` |
@@ -78,6 +85,34 @@ The replication fields mean:
 
 Files belonging to other users are indistinguishable from files that do not
 exist: both return `404`.
+
+### Previews
+
+`GET /api/v1/files/{id}/preview` uses the same authorisation and the same
+verified read as the download (spool-and-verify, replica fallback). Only these
+formats are ever served inline:
+
+| Format | Detected by | Served as | Default limit |
+|---|---|---|---|
+| JPEG, PNG, WebP | magic number | `image/jpeg`, `image/png`, `image/webp` | 25 MiB (`NODEMESH_PREVIEW_MAX_BYTES`) |
+| PDF | `%PDF-` header | `application/pdf` | 25 MiB |
+| Text (`.txt`, `.log`, `.md`, `.csv`, `.json`, `.yaml`, `text/*`...) | valid UTF-8, no NUL byte | `text/plain; charset=utf-8` | 1 MiB (`NODEMESH_PREVIEW_TEXT_MAX_BYTES`) |
+
+How the format is decided:
+- The declared type and the extension only nominate a candidate.
+- The **bytes decide**: a file declared `image/png` that contains HTML gets `415`.
+- HTML, XML and other markup are shown as plain text and are never rendered.
+- SVG and every other format return `415`.
+- Size limits and unsupported types are rejected from metadata, before any
+  storage node is contacted.
+
+Response headers:
+- `Content-Disposition: inline`, `X-Content-Type-Options: nosniff`,
+  `Cache-Control: private, no-store`, `Cross-Origin-Resource-Policy: same-origin`.
+- A response-specific CSP: `default-src 'none'; … sandbox` for images and text.
+  For PDF it is a policy without `sandbox`, that allows only the browser's
+  built-in viewer and forbids framing. PDFs are opened in their own tab, not
+  embedded, because the application forbids framing.
 
 ## Internal API (storage node) — `/internal/v1/`
 

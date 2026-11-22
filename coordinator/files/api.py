@@ -16,7 +16,7 @@ from django.views.decorators.http import require_GET, require_http_methods
 
 from cluster.models import StorageNode
 from files.models import File
-from files.services import quorum
+from files.services import preview, quorum
 from files.services.download import NoReplicaAvailable, fetch_verified
 from files.services.upload import IdempotencyConflict, UploadInProgress, upload
 from files.spool import SpoolError, TooLarge, clean_content_type, clean_filename, spool_stream
@@ -45,6 +45,7 @@ def api_login_required(view: Callable[..., HttpResponse]) -> Callable[..., HttpR
 def serialize_file(file: File) -> dict:
     stored = getattr(file, "stored_replicas", None)
     countable = getattr(file, "countable_replicas", None)
+    verdict = preview.candidate(file)
     return {
         "id": str(file.id),
         "name": file.original_name,
@@ -62,6 +63,12 @@ def serialize_file(file: File) -> dict:
             else quorum.is_under_replicated(countable, file.desired_replicas),
         },
         "download_url": reverse("files:api-file-content", args=[file.id]),
+        # What the UI may offer (metadata only); the server re-checks the bytes.
+        "preview": {
+            "kind": verdict.kind.value if verdict.kind else None,
+            "unavailable_reason": verdict.reason or None,
+            "url": reverse("files:api-file-preview", args=[file.id]) if verdict.kind else None,
+        },
     }
 
 
@@ -202,6 +209,40 @@ def file_content(request: HttpRequest, file_id: uuid.UUID) -> HttpResponse:
     response["Content-Length"] = str(file.size)
     response["X-Content-SHA256"] = file.sha256
     response["Cache-Control"] = "private, no-store"
+    return response
+
+
+@api_login_required
+@require_GET
+def file_preview(request: HttpRequest, file_id: uuid.UUID) -> HttpResponse:
+    """Serve verified bytes inline, only for formats that are safe to render.
+
+    Same authorisation and verified read as ``file_content``; see
+    ``files/services/preview.py`` for the format and size policy.
+    """
+    file = _owned_file(request, file_id)
+    if file is None:
+        return api_error(404, "not_found")
+    verdict = preview.candidate(file)
+    if verdict.kind is None:  # decided from metadata: no node is contacted
+        status = 413 if verdict.reason == "preview_too_large" else 415
+        return api_error(status, verdict.reason)
+    try:
+        content = fetch_verified(file)
+    except NoReplicaAvailable as exc:
+        return api_error(503, exc.code)
+    content_type = preview.sniff(verdict.kind, content.handle)
+    if content_type is None:
+        content.handle.close()
+        logger.info("preview refused: content does not match its type", extra={"file_id": str(file.id)})
+        return api_error(415, "preview_unsupported")
+    response = FileResponse(
+        content.handle, as_attachment=False, filename=file.original_name, content_type=content_type
+    )
+    response["Content-Length"] = str(file.size)
+    response["Cache-Control"] = "private, no-store"
+    response["Content-Security-Policy"] = preview.csp_for(content_type)
+    response["Cross-Origin-Resource-Policy"] = "same-origin"
     return response
 
 

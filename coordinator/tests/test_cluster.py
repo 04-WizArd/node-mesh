@@ -422,3 +422,67 @@ def test_lost_node_volume_is_detected_and_repaired_after_rescan(api, cluster):
     reconcile()  # scrub -> missing -> forgotten -> re-replicated
     assert replica_states(file_id)["node-2"] == "stored"
     assert cluster["node-2"].object_path(file_id).read_bytes() == DATA
+
+
+# --- previews -----------------------------------------------------------------------
+PNG_1PX = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6300010000050001"
+    "0d0a2db40000000049454e44ae426082"
+)
+
+
+def preview(client, file_id):
+    return client.get(f"/api/v1/files/{file_id}/preview")
+
+
+def test_image_preview_is_inline_verified_and_locked_down(api, cluster):
+    file_id = upload(api, PNG_1PX, name="pixel.png", **{"Content-Type": "image/png"}).json()["file"]["id"]
+    response = preview(api, file_id)
+    assert response.status_code == 200
+    assert body(response) == PNG_1PX
+    assert response["Content-Type"] == "image/png"
+    assert response["Content-Disposition"].startswith("inline;")
+    assert response["X-Content-Type-Options"] == "nosniff"
+    assert response["Cache-Control"] == "private, no-store"
+    csp = response["Content-Security-Policy"]
+    assert "sandbox" in csp and "script-src" not in csp and "default-src 'none'" in csp
+
+
+def test_pdf_preview_is_served_as_pdf(api, cluster):
+    data = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+    file_id = upload(api, data, name="doc.pdf", **{"Content-Type": "application/pdf"}).json()["file"]["id"]
+    response = preview(api, file_id)
+    assert response.status_code == 200 and body(response) == data
+    assert response["Content-Type"] == "application/pdf"
+    assert "frame-ancestors 'none'" in response["Content-Security-Policy"]
+
+
+def test_html_is_previewed_as_plain_text_never_rendered(api, cluster):
+    data = b"<html><body><script>alert(document.cookie)</script></body></html>"
+    file_id = upload(api, data, name="page.html", **{"Content-Type": "text/html"}).json()["file"]["id"]
+    response = preview(api, file_id)
+    assert response.status_code == 200
+    assert response["Content-Type"] == "text/plain; charset=utf-8"
+    assert body(response) == data
+
+
+def test_spoofed_content_type_is_refused(api, cluster):
+    """Declared as a PNG, but the bytes are HTML: nothing is rendered."""
+    data = b"<html><script>alert(1)</script></html>"
+    file_id = upload(api, data, name="evil.png", **{"Content-Type": "image/png"}).json()["file"]["id"]
+    response = preview(api, file_id)
+    assert response.status_code == 415
+    assert response.json() == {"error": "preview_unsupported"}
+
+
+def test_preview_falls_back_and_reports_missing_replicas(api, cluster):
+    file_id = upload(api, PNG_1PX, name="pixel.png", **{"Content-Type": "image/png"}).json()["file"]["id"]
+    corrupt(cluster["node-1"].object_path(file_id))
+    cluster["node-2"].stop()
+    response = preview(api, file_id)  # node-1 corrupt, node-2 down: served by node-3
+    assert response.status_code == 200 and body(response) == PNG_1PX
+    cluster["node-3"].stop()
+    unavailable = preview(api, file_id)
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"error": "no_replica_available"}
