@@ -51,7 +51,10 @@ def main() -> int:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
-    print(f"Wrote {target.name} with generated secrets. Now set POSTGRES_PASSWORD in it.")
+    todo = sorted(set(re.findall(r"^([A-Z0-9_]+)=<fill-in>$", text, flags=re.MULTILINE)))
+    print(f"Wrote {target.name} with generated secrets (mode 0600).")
+    if todo:
+        print("Now fill in: " + ", ".join(todo))
     return 0
 
 

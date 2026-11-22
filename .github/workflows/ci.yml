@@ -68,14 +68,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Generate throwaway cluster configuration
-        run: python3 scripts/init_env.py --cluster
-      - name: Start isolated cluster
-        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml up -d --build --wait --wait-timeout 180
+        run: make cluster-env
+      - name: Validate the test stack's Compose configuration
+        run: >-
+          env NODEMESH_VERSION=test docker compose --env-file .env.cluster -p nodemesh-test
+          -f compose.yaml -f compose.test.yaml config --quiet
+      - name: Build and start the isolated cluster (one build per image, waits for health)
+        run: make cluster-test-up
       - name: Failure demonstration (upload, node down, verified read, re-replication)
-        run: python3 scripts/cluster_demo.py --create-user --compose "docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml"
+        run: make cluster-test-demo
       - name: Logs on failure
         if: failure()
-        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml logs --no-color --tail 200
+        run: make cluster-test-logs
       - name: Tear down
         if: always()
-        run: docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml down -v
+        run: make cluster-test-down

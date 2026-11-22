@@ -1,0 +1,28 @@
+# Overlay: use a PostgreSQL server that already runs in Docker on this host.
+# Nothing about that container is changed: the coordinator and reconciler
+# simply join its existing Docker network and reach it by container name.
+#
+# Find the network name once with:
+#   docker inspect <postgres-container> \
+#     --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
+# and set POSTGRES_DOCKER_NETWORK and POSTGRES_CONTAINER_HOST in .env.cluster.
+#
+# Inside a container, 127.0.0.1 is the container itself: the database is never
+# reached through a host port or an SSH tunnel from here.
+
+services:
+  coordinator:
+    environment:
+      POSTGRES_HOST: ${POSTGRES_CONTAINER_HOST:?set POSTGRES_CONTAINER_HOST in .env.cluster}
+      POSTGRES_PORT: "5432"
+    networks: [edge, internal, database]
+  reconciler:
+    environment:
+      POSTGRES_HOST: ${POSTGRES_CONTAINER_HOST:?set POSTGRES_CONTAINER_HOST in .env.cluster}
+      POSTGRES_PORT: "5432"
+    networks: [internal, database]
+
+networks:
+  database:
+    external: true
+    name: ${POSTGRES_DOCKER_NETWORK:?set POSTGRES_DOCKER_NETWORK in .env.cluster}

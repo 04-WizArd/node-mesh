@@ -1,11 +1,12 @@
-# Overlay: fully isolated integration-test stack (CI, or a dry run on the Dell).
+# Overlay: fully isolated integration-test stack (CI, or any Docker host).
+# Use it through the Makefile, which also pins the project name, the image tag
+# and the port so it can never touch the persistent cluster:
 #
-#   docker compose --env-file .env.cluster -f compose.yaml -f compose.test.yaml up -d --build --wait
+#   make cluster-test-up && make cluster-test-demo && make cluster-test-down
 #
-# * Separate project name => separate containers, networks and volumes; it can
-#   run next to the real cluster without touching it.
+# * Separate project => separate containers, networks and volumes.
 # * PostgreSQL keeps its data in tmpfs and publishes no port, so it can never
-#   collide with the existing PostgreSQL on the host or outlive the test run.
+#   collide with another PostgreSQL on the host or outlive the test run.
 
 name: nodemesh-test
 
