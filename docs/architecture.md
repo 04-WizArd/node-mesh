@@ -167,10 +167,15 @@ that fail the probe in a cycle are not contacted by the later steps of that cycl
 | `scrub` | node-side re-hash of `stored` replicas never verified or not verified for `NODEMESH_VERIFY_INTERVAL_SECONDS` |
 | `repair_bad_replicas` | deletes `corrupt` copies; forgets `missing` ones |
 | `re_replicate` | files whose countable replicas are below the desired count: verified fetch from a good replica, then PUT to new targets |
-| `collect_orphans` | node objects unknown to metadata are deleted after a grace period; valid copies the coordinator lost track of (lost acknowledgements) are adopted |
+| `collect_orphans` | node objects unknown to metadata are deleted after a grace period, unless they are an implausibly large share of the node's objects (likely a wrong database: deletion is refused and logged); valid copies the coordinator lost track of (lost acknowledgements) are adopted |
 
 Nodes clean their own `tmp/` and `trash/` on startup (`cleanup_temp`), so
 interrupted writes never become visible objects.
+
+In Docker, the reconciler touches a heartbeat file after every successful
+cycle; its healthcheck fails when no cycle has succeeded for
+`NODEMESH_RECONCILER_MAX_SILENCE` seconds. A failing cycle (for example, the
+database is down) is logged and retried rather than crashing the process.
 
 ## Design decisions and trade-offs
 

@@ -44,9 +44,15 @@ Every item below is implemented and covered by automated tests.
     never parsed before authentication.
   - Configuration: no secrets in the repository.
 - **Operations.**
-  - Docker images (non-root, no published node ports, read-only node root filesystem).
-  - Compose overlays for the existing database and for an isolated test stack.
-  - JSON logs, health and readiness probes.
+  - One `make` interface for local development and for the Docker cluster:
+    build, explicit migrations, start, status, logs, repair.
+  - Docker images (non-root, no published node ports, read-only node root
+    filesystem), each built once.
+  - Health checks that mean something: database reachable, node volume
+    writable, reconciler cycles succeeding.
+  - Safety guards: no automatic migration of a shared database, no silent node
+    re-registration, no mass deletion by orphan cleanup.
+  - JSON logs with bounded rotation.
   - CI: lint, tests on PostgreSQL 17, and a Docker failure smoke test.
 
 ## Architecture
@@ -82,30 +88,58 @@ Details: [architecture](docs/architecture.md) · [consistency and failure semant
 
 See [consistency.md](docs/consistency.md#what-is-not-guaranteed).
 
-## Quick start
+## Components
 
-### Isolated cluster in Docker (Linux host with Docker Engine + Compose)
+| Service | Role |
+|---|---|
+| **Coordinator** | Web UI and API: users, authorisation, metadata, placement, quorum writes, verified reads |
+| **Reconciler** | Background loop (same code as the coordinator): health probes, crash recovery, scrubbing, re-replication, garbage collection |
+| **Storage node** | One codebase, N instances: stores immutable objects on its own volume; private, HMAC-authenticated API |
+| **PostgreSQL** | All metadata (users, files, replicas, node registry); the single source of truth |
+
+## Getting started
+
+`make help` lists every command. Two workflows are supported, each documented
+step by step.
+
+**Local development**: Python virtualenv, no Docker, any PostgreSQL
+([docs/development.md](docs/development.md)):
 
 ```bash
-python3 scripts/init_env.py --cluster          # .env.cluster with generated secrets (0600)
-make cluster-test-up                           # coordinator, reconciler, 3 nodes, throwaway PostgreSQL
-make demo                                      # scripted failure demonstration
-make cluster-test-down
+make venv && make dev-env        # then set POSTGRES_PASSWORD in .env
+make dev-migrate                 # after `make dev-migrate-plan`
+make dev-nodes                   # terminal 1: 3 storage nodes from one codebase
+make dev-register && make dev-run   # terminal 2: http://127.0.0.1:8000
 ```
 
-The UI is at <http://127.0.0.1:8080> (French interface).
-
-To run against an existing PostgreSQL instead, use `compose.dell.yaml`; see
-[operations.md](docs/operations.md#workflow-b--the-cluster-in-docker-on-the-dell).
-
-### Local development without Docker
+**Docker cluster**: Linux host, existing PostgreSQL container
+([docs/deployment.md](docs/deployment.md)):
 
 ```bash
-make venv && make env        # then set POSTGRES_PASSWORD in .env
-make migrate-plan && make migrate
-make nodes                   # 3 storage nodes from one codebase (ports 8101-8103)
-make register-nodes && make run
+make cluster-env                 # then fill in the PostgreSQL values in .env.cluster
+make cluster-config cluster-build
+make cluster-migrate-plan cluster-migrate
+make cluster-up                  # waits until every service is healthy
 ```
+
+**Try it without any setup**: an isolated, throwaway stack with its own PostgreSQL:
+
+```bash
+make cluster-env cluster-test-up cluster-test-demo cluster-test-down
+```
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [development.md](docs/development.md) | Workflow A: install, configure, run, test locally |
+| [deployment.md](docs/deployment.md) | Workflow B: Docker deployment, database, volumes, remote access, updates |
+| [operations.md](docs/operations.md) | Status, failure recovery, nodes, key rotation, backups, troubleshooting |
+| [architecture.md](docs/architecture.md) | Components, data model, write/read paths, failure detection, repair |
+| [consistency.md](docs/consistency.md) | Exact guarantees and what is not guaranteed |
+| [api.md](docs/api.md) | Public API and internal node protocol |
+| [security.md](docs/security.md) | Threat model and controls |
+| [testing.md](docs/testing.md) | Test suites and isolation |
 
 ## Failure demonstration
 
@@ -137,8 +171,8 @@ Output from a run against real node processes:
 ## Tests
 
 ```bash
-make test    # 128 tests: protocol, storage engine, node API, coordinator rules, web security,
-             # and 20 distributed scenarios against real storage-node processes
+make test    # 135 tests: protocol, storage engine, node API, coordinator rules, web security,
+             # and 22 distributed scenarios against real storage-node processes
 ```
 
 The tests never touch the development database (see [testing.md](docs/testing.md)).
@@ -193,8 +227,8 @@ coordinator/      Django project A: accounts, files, cluster apps; UI; reconcile
 storage-node/     Django project B: one codebase for every storage node
 shared/           nodemesh_common: request signing, env parsing, JSON logging
 docker/           Dockerfiles and entrypoints
-compose*.yaml     cluster definition + overlays (existing PostgreSQL / isolated test)
+compose.yaml      the cluster; overlays: compose.external-db.yaml, compose.test.yaml
 scripts/          env generation, local nodes, DB inventory, demo, benchmark
-docs/             architecture, consistency, API, security, operations, testing
+docs/             development, deployment, operations, architecture, consistency, API, security, testing
 AUDIT.md          the original audit of the academic version (historical)
 ```

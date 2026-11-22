@@ -1,122 +1,234 @@
 # Operations
 
-## Workflow A — develop on the Mac, PostgreSQL on the Dell
+Day-2 runbook for a running cluster. Installation:
+- [development.md](development.md) (Workflow A, local processes);
+- [deployment.md](deployment.md) (Workflow B, Docker).
 
-Prerequisites:
-- Python ≥ 3.12;
-- the SSH tunnel `ssh -N -L 15432:127.0.0.1:5432 <user>@<dell>`.
+Commands are given for the Docker cluster. In Workflow A, use the matching
+`dev-*` target, or `manage.py` directly.
 
-Neither Docker nor PostgreSQL is needed on the Mac.
-
-```bash
-make venv                 # .venv + pinned dependencies + shared package (editable)
-make env                  # .env with generated secrets (mode 0600); then set POSTGRES_PASSWORD
-make inventory            # read-only: what is in the database right now?
-make migrate-plan         # what would migrate do? (no changes)
-make migrate              # only after reviewing the plan
-make nodes                # terminal 1: node-1..3 on 127.0.0.1:8101-8103, data in var/nodes/
-make register-nodes       # registers NODEMESH_NODES from .env
-cd coordinator && ../.venv/bin/python manage.py createsuperuser
-make run                  # terminal 2: http://127.0.0.1:8000
-make reconcile            # one reconciliation cycle (or: manage.py reconcile --loop)
-```
-
-## Workflow B — the cluster in Docker on the Dell
+## Reading the cluster's state
 
 ```bash
-python3 scripts/init_env.py --cluster     # .env.cluster with generated secrets
-# edit .env.cluster: POSTGRES_PASSWORD, POSTGRES_DOCKER_NETWORK (see below)
-docker inspect postgres-distributed \
-  --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}'
-make cluster-up           # build + start against the existing PostgreSQL (migrations NOT automatic)
-docker compose --env-file .env.cluster -f compose.yaml -f compose.dell.yaml \
-  exec coordinator python manage.py migrate --plan
+make cluster-ps       # containers: running / healthy
+make cluster-status   # nodes and replication, from the coordinator's metadata
 ```
 
-- The coordinator joins the PostgreSQL container's existing network. Nothing
-  about `postgres-distributed` (configuration, port, volume) is modified, and
-  no second PostgreSQL is started on its port.
-- Inside a container, `127.0.0.1` is the container itself. The database is
-  reached by container name, never through the Mac's tunnel.
-- The coordinator listens on `127.0.0.1:8080` of the Dell by default. From the
-  Mac, either forward it (`ssh -L 8080:127.0.0.1:8080 ...`) or set
-  `COORDINATOR_BIND` deliberately, ideally behind a TLS reverse proxy.
-- Data lives in named volumes (`node-N-data`, `coordinator-spool`), which
-  survive `docker compose down` and container recreation. Only `down -v`
-  deletes them.
+`cluster-status` shows, per node:
+- `admin` (`active` / `draining` / `disabled`): the operator's intent;
+- `health`, as observed by the coordinator:
 
-### Isolated test stack (safe anywhere)
+  | `health` | Meaning |
+  |---|---|
+  | `healthy` | the last contact succeeded |
+  | `unreachable` | a few recent failures; possibly transient, the node still receives copies as a last resort |
+  | `suspect` | `NODEMESH_SUSPECT_AFTER_FAILURES` consecutive failures (default 3): presumed down, its copies stop counting and repairs start |
+  | `unknown` | never contacted |
+
+- `copies`: the stored replicas it holds.
+
+The summary line counts files per status and the **under-replicated** ones,
+meaning files with fewer healthy copies than the replication factor.
+
+The reconciler runs every `NODEMESH_RECONCILE_INTERVAL` seconds (default 30).
+Each cycle logs one JSON line with counters, which you can read with
+`make cluster-logs SERVICE=reconciler`:
+
+| Counter | Meaning | Worth attention when |
+|---|---|---|
+| `nodes_healthy` / `nodes_failing` | probe results | `nodes_failing` > 0 for several cycles |
+| `replicas_created` | repairs (re-replication) | persistently high |
+| `replicas_corrupt`, `replicas_missing` | damaged or lost copies found | any |
+| `orphans_deleted` | garbage removed from nodes | unexpectedly high |
+| `orphan_gc_refused` | mass deletion blocked (likely wrong database) | **any: investigate before anything else** |
+| `re_replication_no_target` | no eligible node to receive a copy | persistent: add a node or bring one back |
+
+## Failure scenarios
+
+### A storage node stops or crashes
+
+**Impact.**
+- Reads continue from the other copies.
+- Uploads still succeed with two nodes (W = 2) and are reported as under-replicated.
+
+**Recovery.** Docker restarts the node (`restart: unless-stopped`). Otherwise:
+`make cluster-restart SERVICE=node-2`.
+
+Once the node is healthy again, the next reconciler cycles copy the missing
+replicas back to it.
+
+With three nodes and RF = 3, there is no spare to copy to while a node is down:
+files stay under-replicated until it returns. A spare node changes this (see
+below).
+
+### A node's volume is lost or replaced
+
+A node that restarts with an empty or restored volume looks healthy, because
+it answers probes. Its missing copies are only noticed when they are read or
+re-verified (`NODEMESH_VERIFY_INTERVAL_SECONDS`, 24 h by default). To force
+the check:
 
 ```bash
-make cluster-test-up      # separate project "nodemesh-test", throwaway PostgreSQL in tmpfs, no host DB port
-make demo                 # scripted failure demonstration (see README)
-make cluster-test-down    # removes the test stack and its volumes
+make cluster-rescan NODE=node-2   # marks node-2's copies for verification
+make cluster-reconcile            # or wait for the reconciler
 ```
 
-## Adding a storage node
+Each cycle verifies up to `NODEMESH_RECONCILE_BATCH` copies (default 100).
+Missing or corrupt copies are recorded and re-created from the healthy ones.
+Watch `make cluster-status` until nothing is under-replicated.
 
-Use the same image or codebase; only the configuration is new.
+### Corrupt data on a node
 
-1. Generate a secret (`python3 -c "import secrets; print(secrets.token_hex(32))"`).
-2. Start the instance with `NODE_ID=node-5`, its own volume, and
-   `NODE_HMAC_KEYS=k1:<secret>`. In Compose, copy a `node-N` service block,
-   which only references the shared `x-node` anchor.
-3. Add `node-5:k1:<secret>` to `NODEMESH_NODE_CREDENTIALS` for the coordinator
-   and reconciler, then restart them.
-4. Run `manage.py register_node node-5 http://node-5:8000`.
+Detection is automatic:
+- reads verify the SHA-256 and fall back to another copy;
+- the scrub re-hashes copies periodically.
 
-New uploads consider the node immediately. Existing files are not rebalanced
-(see limitations). The reconciler uses the node for repairs.
+Corrupt copies are deleted and re-created. Nothing to do except investigate
+the disk.
 
-## Draining or disabling a node
+### A node's disk is full
+
+The node refuses writes (`507`) below `NODE_MIN_FREE_BYTES`, and uploads place
+the copy elsewhere if possible. Free space or add a node. Existing data is
+unaffected.
+
+### The database is unreachable
+
+**Impact.**
+- The coordinator turns unhealthy (`/readyz`), and uploads and downloads fail.
+- The reconciler's cycles fail, so it turns unhealthy after
+  `NODEMESH_RECONCILER_MAX_SILENCE`.
+
+Nothing is lost or written while the database is down. Both services recover
+by themselves when it returns.
+
+### The coordinator or reconciler is down
+
+- **Coordinator down:** nothing can be read or written. It is a single point of
+  failure (see [consistency.md](consistency.md#what-is-not-guaranteed)).
+- **Reconciler down:** service continues, but there is no repair, garbage
+  collection or health probing until it is back.
+
+### After a host reboot
+
+The containers restart automatically. Check `make cluster-ps`, then
+`make cluster-status`. Node health goes back to `healthy` on the first probe.
+
+## Nodes
+
+### Adding a node
+
+`compose.yaml` defines a spare node, `node-4`, using the same image:
 
 ```bash
-manage.py register_node node-2 http://node-2:8000 --state draining   # serves reads, gets no new copies
-manage.py register_node node-2 http://node-2:8000 --state disabled   # never contacted
+make cluster-spare-up
+docker compose --env-file .env.cluster -f compose.yaml -f compose.external-db.yaml \
+  exec coordinator python manage.py register_node node-4 http://node-4:8000
 ```
 
-Replicas on draining or disabled nodes do not count toward durability, so the
-reconciler copies those files elsewhere.
+For a fifth node:
+1. Copy the `node-4` service block, changing `node-5` everywhere, and give it
+   its own volume.
+2. Add `NODE_5_HMAC_SECRET` to `.env.cluster`
+   (`python3 -c "import secrets; print(secrets.token_hex(32))"`).
+3. Append `node-5:${NODE_KEY_ID:-k1}:${NODE_5_HMAC_SECRET}` to
+   `NODEMESH_NODE_CREDENTIALS` in `compose.yaml`.
+4. Run `make cluster-up`, then register the node as above.
 
-## Rotating a node key
+New uploads and repairs use new nodes immediately. Existing files are not
+rebalanced.
 
-1. Give the node both keys: `NODE_HMAC_KEYS=k2:<new>,k1:<old>`, then restart it.
-2. Switch the coordinator to `node-N:k2:<new>`, then restart the coordinator and reconciler.
-3. Remove `k1` from the node and restart it.
+### Draining or disabling a node
 
-## Database reset (project tables only)
+```bash
+docker compose --env-file .env.cluster -f compose.yaml -f compose.external-db.yaml exec coordinator \
+  python manage.py register_node node-2 http://node-2:8000 --state draining   # serves reads, gets no new copies
+#                                                          --state disabled   # never contacted
+#                                                          --state active     # back to normal
+```
 
-The rebuilt coordinator uses new tables: `cluster_storagenode`, `files_file`
-and `files_replica`. The legacy tables (`node_storagenode`, `node_file`,
-`node_filechunk`) do not conflict with them and can be left in place.
+Copies on draining or disabled nodes do not count toward durability, so the
+reconciler copies those files to other active nodes when one is available.
 
-To start from a clean schema:
+### Moving a node to a new address
 
-1. Run `make inventory` (read-only) and review exactly which tables exist and
-   how many rows they hold.
-2. Take a backup on the Dell:
-   `docker exec postgres-distributed pg_dump -U storage_admin -Fc distributed_storage > backup.dump`.
-3. Execute only the statements that were presented and approved for this
-   database. The reset never touches other databases on the server.
+`register_node` refuses to change a registered node's URL. This protects
+against a coordinator pointed at the wrong database. Pass `--update-url` when
+the move is intended.
 
-## Logs and monitoring
+## Rotating node keys
 
-All services log one JSON object per line to stdout:
-- `docker compose logs -f coordinator reconciler node-1`
-- useful fields: `file_id`, `node_id`, `error`, `report`.
+- **In the Compose deployment:** change `NODE_<n>_HMAC_SECRET` in
+  `.env.cluster`, then run `make cluster-up`. The node, coordinator and
+  reconciler restart with the new key; requests in flight during the restart fail.
+- **Without downtime:** nodes accept several keys (`NODE_HMAC_KEYS=k2:<new>,k1:<old>`).
+  1. Give the node both keys.
+  2. Switch the coordinator to `k2`.
+  3. Remove `k1` from the node.
 
-Each reconciler cycle logs its counters. For example, `replicas_created`,
-`replicas_corrupt` or `orphans_deleted` are worth alerting on.
+  Each step needs a restart. This requires per-node `NODE_HMAC_KEYS` overrides
+  in `compose.yaml`.
 
-Probes:
-- the coordinator's `/readyz` checks the database;
-- a node's `/readyz` checks that its volume is writable and above the free-space floor.
+## Backups
+
+A consistent backup has three parts: the database, the node volumes, and
+`.env.cluster` (it holds the keys). Objects are immutable, so this order gives
+a usable set without stopping the cluster:
+
+1. **Database first:**
+   ```bash
+   docker exec <postgres-container> pg_dump -U nodemesh -Fc nodemesh > nodemesh-$(date +%F).dump
+   ```
+2. **Then each node volume.** Files uploaded after the dump are extra copies
+   the restored database does not know about. Files deleted in between may be
+   missing.
+   ```bash
+   for n in 1 2 3; do
+     docker run --rm -v <project>_node-$n-data:/data:ro -v "$PWD":/backup alpine \
+       tar czf /backup/node-$n-$(date +%F).tgz -C /data objects
+   done
+   ```
+3. **Store the backup files outside the host**, and `.env.cluster` in a secret store.
+
+**Restoring:**
+1. Restore the database and the volumes from the same backup set.
+2. Start the cluster.
+3. Run `make cluster-rescan NODE=node-N` for each node.
+
+If orphan cleanup reports `orphan_gc_refused`, the database and the volumes do
+not belong together: stop and check before changing any setting.
+
+**Partial backups.** With three copies, one node's volume can be rebuilt by
+the cluster itself (see [Failure scenarios](#a-nodes-volume-is-lost-or-replaced)).
+Backups protect against losing the host, the disk, or the database.
+
+## Logs
+
+Every service writes one JSON object per line to stdout:
+
+```bash
+make cluster-logs                     # all services
+make cluster-logs SERVICE=coordinator
+```
+
+The most useful fields are `file_id`, `node_id`, `error` and `report`. Each
+container keeps at most 3 × 10 MB of logs (`x-logging` in `compose.yaml`); ship
+them elsewhere if you need a longer history.
 
 ## Troubleshooting
 
-| Symptom | Check |
+| Symptom | Cause and fix |
 |---|---|
-| Uploads return 503 `replication_quorum_not_met` | `GET /api/v1/cluster/nodes/` (staff): fewer than W nodes are active and not suspect; are node keys consistent between the coordinator and the nodes (`bad_signature` in `last_error`)? |
-| A node stays `suspect` after it was fixed | The next reconciler cycle probes it; run `manage.py reconcile` once |
-| `expired` signatures | The clocks of the coordinator and node hosts differ by more than 60 s: enable NTP |
-| Files stay under-replicated | Is there an eligible node without a copy (`re_replication_no_target` in the reconciler log)? With 3 nodes and one down, there is none until it returns |
+| Build fails with an image tag "already exists" or a similar conflict | Several services built the same image concurrently (fixed: only `coordinator` and `node-1` build). Pull the latest code and run `make cluster-build` |
+| `up --wait` fails: a container "has no healthcheck configured" | The reconciler used to disable its healthcheck (fixed: heartbeat healthcheck). Pull, `make cluster-build`, `make cluster-up` |
+| `cluster-up`: "pull access denied" / "No such image" for `nodemesh/...` | Images not built yet: `make cluster-build` |
+| The coordinator exits: "database schema is not up to date, or the database is unreachable" | Run `make cluster-migrate-plan` and `make cluster-migrate`. Otherwise check `POSTGRES_*`, `POSTGRES_DOCKER_NETWORK` and that the PostgreSQL container is running |
+| `cluster-config` or `cluster-up`: "set POSTGRES_… in .env.cluster" | A required value is still `<fill-in>` or missing |
+| "network … declared as external, but could not be found" | `POSTGRES_DOCKER_NETWORK` does not match the PostgreSQL container's network (`docker inspect`, see deployment) |
+| The reconciler stays `unhealthy` | `make cluster-logs SERVICE=reconciler`: cycles are failing, usually because the database is unreachable |
+| Uploads return 503 `replication_quorum_not_met` | Fewer than W nodes are active and not suspect: `make cluster-status`. Check node logs; `bad_signature` in a node's `last_error` means a key mismatch between `.env.cluster` and the running containers (run `make cluster-up` after editing secrets) |
+| A node stays `suspect` after being fixed | It returns to `healthy` at the next probe: `make cluster-reconcile` |
+| `expired` signature errors | The clocks of the hosts differ by more than 60 s: enable NTP |
+| `register_node`: "refusing to change the URL" | The coordinator uses a database that already registered this node elsewhere. Check the database first, then use `--update-url` only if the move is intended |
+| `orphan_gc_refused` in the reconciler log | Most objects on a node are unknown to the database: likely a wrong, empty or restored database. Do not raise `NODEMESH_ORPHAN_GC_MAX_FRACTION` before understanding why |
+| The cluster comes up empty after moving the checkout | The project name, and therefore the volume names, changed. `make cluster-volumes` lists the old volumes. Set `COMPOSE_PROJECT_NAME` to the old prefix |

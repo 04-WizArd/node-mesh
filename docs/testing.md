@@ -15,8 +15,8 @@ make lint check  # ruff, Django system checks, migration drift
   pytest-django creates and drops its own test database;
 - otherwise: a temporary SQLite file.
 
-The tests can therefore never create, migrate or drop anything on the Dell's
-`distributed_storage`.
+The tests can therefore never create, migrate or drop anything in the
+development or cluster databases.
 
 ## Suites
 
@@ -27,6 +27,7 @@ The tests can therefore never create, migrate or drop anything on the Dell's
 | `storage-node/tests/test_api.py` | Full HTTP lifecycle; unsigned, wrong-key, wrong-node, expired and **replayed** requests; tampered body under a valid signature; chunked encoding; size limit (413); insufficient storage (507); traversal URLs; pagination; integrity endpoint; probes |
 | `coordinator/tests/test_rules.py` | Quorum and under-replication rules; database constraints (idempotency, status, one replica per node); replica counting; placement filters and ordering; health transitions; filename and content-type sanitisation; bounded spooling |
 | `coordinator/tests/test_web_security.py` | 401 on every API route; other users' files return 404; CSRF on upload, delete and logout; oversized, chunked and multipart uploads; login redirect (no tokens); POST-only logout; registration and password policy; security headers and CSP; no HTML sinks in JS; no inline scripts or handlers in templates |
+| `coordinator/tests/test_operations.py` | Reconciler heartbeat (written on success only), `register_node` URL guard and all-or-nothing behaviour, `cluster_status` report |
 | `coordinator/tests/test_cluster.py` (`-m cluster`) | Runs against **real storage-node processes** (gunicorn, 2 workers each, real HMAC, real disks), see below |
 
 The `test_cluster.py` scenarios are:
@@ -45,19 +46,28 @@ The `test_cluster.py` scenarios are:
 - coordinator crash resolved from node state;
 - orphan deletion and lost-acknowledgement adoption;
 - delete and purge; reconciler idempotency;
-- a query budget per upload and download (guards against N+1 regressions).
+- a query budget per upload and download (guards against N+1 regressions);
+- refusal of mass orphan deletion (coordinator on the wrong database);
+- a node volume lost and recovered with `rescan_node`.
 
 ## Docker smoke test
 
-`scripts/cluster_demo.py` drives a running Compose stack:
+The same commands work locally on a Docker host and in CI (the `docker-smoke` job):
+
+```bash
+make cluster-env          # throwaway secrets (CI) or your existing .env.cluster
+make cluster-test-up      # isolated project "nodemesh-test": build once, start, wait for health
+make cluster-test-demo    # scripts/cluster_demo.py
+make cluster-test-down    # removes the test stack and its volumes only
+```
+
+`scripts/cluster_demo.py` drives the stack through the public API and Compose:
 - upload a file;
-- `docker compose stop node-2`;
+- `stop node-2`;
 - verified download from a surviving replica;
 - upload at quorum during the outage;
 - restart node-2 and run reconcile;
 - check the file is back to 3/3 replicas.
-
-CI runs it in the `docker-smoke` job against `compose.test.yaml`.
 
 ## Benchmark
 
