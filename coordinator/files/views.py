@@ -10,4 +10,8 @@ from django.views.decorators.http import require_GET
 @login_required
 @ensure_csrf_cookie
 def index(request: HttpRequest) -> HttpResponse:
-    return render(request, "files/index.html", {"max_upload_bytes": settings.NODEMESH_MAX_UPLOAD_BYTES})
+    context = {
+        "max_upload_bytes": settings.NODEMESH_MAX_UPLOAD_BYTES,
+        "replication_factor": settings.NODEMESH_REPLICATION_FACTOR,
+    }
+    return render(request, "files/index.html", context)

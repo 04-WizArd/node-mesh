@@ -170,3 +170,16 @@ def test_api_unknown_routes_return_json(client):
 def test_probes(client):
     assert client.get("/healthz").json() == {"status": "ok"}
     assert client.get("/readyz").json() == {"status": "ready"}
+
+
+def test_stylesheet_keeps_the_hidden_attribute_effective():
+    """Author display rules (.btn, .state...) must not override [hidden] (stacked UI states)."""
+    css = (STATIC / "css" / "app.css").read_text()
+    assert re.search(r"\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}", css)
+
+
+def test_file_manager_page_structure(api):
+    html = api.get("/").content.decode()
+    assert '<dialog class="viewer" id="viewer"' in html  # native modal: focus trap + Escape
+    assert 'id="i-eye"' in html and 'id="i-download"' in html  # icon sprite
+    assert " style=" not in html  # inline styles would be blocked by the CSP

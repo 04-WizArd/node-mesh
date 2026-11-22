@@ -1,44 +1,109 @@
 {% extends "base.html" %}
 {% load static %}
-{% block title %}Mes fichiers{% endblock %}
+{% block title %}Fichiers{% endblock %}
 {% block content %}
-<h1>Mes fichiers</h1>
+<div class="page-head">
+  <div>
+    <h1>Fichiers</h1>
+    <p class="muted">Chaque fichier est répliqué sur {{ replication_factor }} nœuds et vérifié (SHA-256) à chaque lecture.</p>
+  </div>
+  <button type="button" class="btn btn-primary" id="upload-trigger">
+    <svg class="icon" aria-hidden="true"><use href="#i-upload"></use></svg>Téléverser
+  </button>
+</div>
 
-<section class="card" aria-labelledby="upload-title">
-  <h2 id="upload-title">Téléverser</h2>
+<section class="panel" aria-labelledby="upload-title">
+  <h2 id="upload-title" class="visually-hidden">Téléverser des fichiers</h2>
   <label class="dropzone" id="dropzone" for="file-input">
-    <span>Glissez des fichiers ici ou <u>parcourez</u></span>
-    <span class="muted" id="limit-hint"></span>
+    <svg class="icon icon-lg" aria-hidden="true"><use href="#i-upload"></use></svg>
+    <span><strong>Déposez des fichiers ici</strong> ou <span class="link">parcourez votre ordinateur</span></span>
+    <span class="muted small" id="limit-hint"></span>
     <input type="file" id="file-input" multiple class="visually-hidden">
   </label>
-  <ul class="uploads" id="uploads" aria-live="polite"></ul>
+  <ul class="upload-list" id="uploads" aria-live="polite" aria-label="Téléversements"></ul>
 </section>
 
-<section class="card" aria-labelledby="files-title">
-  <div class="card-head">
-    <h2 id="files-title">Fichiers stockés</h2>
-    <button type="button" class="btn btn-ghost" id="refresh">Actualiser</button>
+<section class="panel" aria-labelledby="files-title">
+  <div class="panel-head">
+    <h2 id="files-title">Mes fichiers <span class="count" id="files-count"></span></h2>
+    <button type="button" class="btn btn-quiet btn-icon" id="refresh" aria-label="Actualiser la liste" title="Actualiser">
+      <svg class="icon" aria-hidden="true"><use href="#i-refresh"></use></svg>
+    </button>
   </div>
-  <p class="muted" id="files-empty" hidden>Aucun fichier pour le moment.</p>
-  <p class="alert" id="files-error" role="alert" hidden></p>
-  <div class="table-wrap">
-    <table id="files-table" hidden>
+
+  <div class="state" id="files-loading" role="status">Chargement des fichiers…</div>
+  <div class="state state-error" id="files-error" role="alert" hidden>
+    <svg class="icon" aria-hidden="true"><use href="#i-alert"></use></svg>
+    <span id="files-error-text"></span>
+    <button type="button" class="btn btn-sm" id="files-retry">Réessayer</button>
+  </div>
+  <div class="state state-empty" id="files-empty" hidden>
+    <svg class="icon icon-xl" aria-hidden="true"><use href="#i-file"></use></svg>
+    <p><strong>Aucun fichier pour le moment</strong></p>
+    <p class="muted">Déposez un fichier ci-dessus pour le stocker sur le cluster.</p>
+  </div>
+
+  <div class="table-wrap" id="files-table-wrap" hidden>
+    <table class="files">
+      <caption class="visually-hidden">Fichiers stockés, du plus récent au plus ancien</caption>
       <thead>
-        <tr><th scope="col">Nom</th><th scope="col">Taille</th><th scope="col">Répliques</th><th scope="col">Ajouté le</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr>
+        <tr>
+          <th scope="col">Nom</th>
+          <th scope="col" class="col-size">Taille</th>
+          <th scope="col" class="col-date">Ajouté le</th>
+          <th scope="col" class="col-rep">Réplication</th>
+          <th scope="col" class="col-actions"><span class="visually-hidden">Actions</span></th>
+        </tr>
       </thead>
       <tbody id="files-body"></tbody>
     </table>
   </div>
+  <div class="panel-foot" id="files-more-wrap" hidden>
+    <button type="button" class="btn" id="files-more">Afficher plus</button>
+  </div>
 </section>
 
 {% if user.is_staff %}
-<section class="card" aria-labelledby="nodes-title">
-  <div class="card-head">
-    <h2 id="nodes-title">État du cluster</h2>
+<section class="panel" aria-labelledby="nodes-title">
+  <div class="panel-head">
+    <h2 id="nodes-title">Nœuds de stockage</h2>
+    <span class="muted small">Visible par les administrateurs</span>
   </div>
-  <ul class="nodes" id="nodes"></ul>
+  <div class="table-wrap">
+    <table class="nodes">
+      <caption class="visually-hidden">État des nœuds de stockage</caption>
+      <thead>
+        <tr><th scope="col">Nœud</th><th scope="col">État</th><th scope="col">Rôle</th><th scope="col" class="num">Espace libre</th><th scope="col" class="col-date">Dernier contact</th></tr>
+      </thead>
+      <tbody id="nodes-body"><tr><td colspan="5" class="muted">Chargement…</td></tr></tbody>
+    </table>
+  </div>
 </section>
 {% endif %}
+
+<dialog class="viewer" id="viewer" aria-labelledby="viewer-title">
+  <div class="viewer-head">
+    <svg class="icon" aria-hidden="true" id="viewer-icon"><use href="#i-file"></use></svg>
+    <h2 id="viewer-title" class="viewer-title"></h2>
+    <button type="button" class="btn btn-quiet btn-icon" id="viewer-close" aria-label="Fermer l'aperçu" autofocus>
+      <svg class="icon" aria-hidden="true"><use href="#i-close"></use></svg>
+    </button>
+  </div>
+  <div class="viewer-body">
+    <div class="viewer-stage" id="viewer-stage" aria-live="polite"></div>
+    <dl class="viewer-meta" id="viewer-meta"></dl>
+  </div>
+  <div class="viewer-foot">
+    <a class="btn" id="viewer-open" target="_blank" rel="noopener noreferrer" hidden>
+      <svg class="icon" aria-hidden="true"><use href="#i-external"></use></svg>Ouvrir dans un onglet
+    </a>
+    <a class="btn btn-primary" id="viewer-download">
+      <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>Télécharger
+    </a>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
 <div id="config"
      data-files-url="{% url 'files:api-files' %}"
