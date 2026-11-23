@@ -1,5 +1,7 @@
 # NodeMesh — replicated object storage with verified reads and self-repair
 
+**English** | [Français](README.fr.md)
+
 NodeMesh stores files on several independent storage nodes. A Django
 coordinator places **three copies** of every object, confirms an upload only
 once a **write quorum** has durably stored and checksum-verified it, serves
@@ -48,7 +50,7 @@ Every item below is implemented and covered by automated tests.
   - Configuration: no secrets in the repository.
 - **Operations.**
   - One `make` interface for local development and for the Docker cluster:
-    build, explicit migrations, start, status, logs, repair.
+    build, explicit migrations, start, status, storage inspection, logs, repair.
   - Docker images (non-root, no published node ports, read-only node root
     filesystem), each built once.
   - Health checks that mean something: database reachable, node volume
@@ -125,7 +127,9 @@ make cluster-migrate-plan cluster-migrate
 make cluster-up                  # waits until every service is healthy
 ```
 
-**Try it without any setup**: an isolated, throwaway stack with its own PostgreSQL:
+**Isolated trial**: a throwaway Docker stack with its own PostgreSQL, which
+can run next to a real cluster (Linux host with Docker; `make cluster-env` only
+if `.env.cluster` does not exist yet):
 
 ```bash
 make cluster-env cluster-test-up cluster-test-demo cluster-test-down
@@ -218,8 +222,9 @@ Known bottlenecks:
   Over-replication after a node returns is tolerated, not trimmed.
 - **No chunking.** Objects are replicated whole, so object size is bounded by
   `NODEMESH_MAX_UPLOAD_BYTES` and by node disks.
-- **No rate limiting.** There is no login rate limiting, no per-user quotas, and
-  no encryption at rest (see [security.md](docs/security.md#known-security-limitations)).
+- **No rate limiting, quotas or encryption at rest.** There is no login rate
+  limiting, no per-user quota, and node data is not encrypted on disk (see
+  [security.md](docs/security.md#known-security-limitations)).
 - **Encrypted transport needed across machines.** Node traffic must be put in
   a WireGuard/SSH tunnel or TLS when nodes run on other machines.
 
