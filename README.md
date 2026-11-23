@@ -174,7 +174,7 @@ Output from a run against real node processes:
 ## Tests
 
 ```bash
-make test    # 169 tests: protocol, storage engine, node API, coordinator rules, web security,
+make test    # 172 tests: protocol, storage engine, node API, coordinator rules, web security,
              # and 27 distributed scenarios against real storage-node processes
 ```
 

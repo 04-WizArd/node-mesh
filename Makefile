@@ -29,7 +29,7 @@ CLUSTER_MANAGE = $(COMPOSE) run --rm --no-deps --entrypoint python coordinator m
         dev-env dev-inventory dev-migrate-plan dev-migrate dev-superuser dev-nodes dev-register \
         dev-run dev-reconcile dev-status \
         cluster-env cluster-config cluster-build cluster-migrate-plan cluster-migrate cluster-up \
-        cluster-ps cluster-logs cluster-status cluster-reconcile cluster-rescan cluster-superuser cluster-restart \
+        cluster-ps cluster-logs cluster-status cluster-storage cluster-reconcile cluster-rescan cluster-superuser cluster-restart \
         cluster-stop cluster-down cluster-volumes cluster-spare-up \
         cluster-test-up cluster-test-demo cluster-test-logs cluster-test-down \
         _require-dev-env _require-cluster-env
@@ -124,6 +124,9 @@ cluster-logs: _require-cluster-env ## Follow logs (SERVICE=coordinator|reconcile
 
 cluster-status: _require-cluster-env ## Node health and replication summary
 	$(COMPOSE) exec coordinator python manage.py cluster_status
+
+cluster-storage: _require-cluster-env ## Read-only: per node, volume, objects and their SHA-256
+	@COMPOSE="$(COMPOSE)" sh scripts/cluster_storage.sh
 
 cluster-reconcile: _require-cluster-env ## Run one reconciliation cycle now
 	$(COMPOSE) exec reconciler python manage.py reconcile

@@ -227,8 +227,14 @@ class BlobStore:
                 size += len(chunk)
         return IntegrityReport(info=info, actual_size=size, actual_sha256=hasher.hexdigest())
 
-    def iter_objects(self, after: uuid.UUID | None = None) -> Iterator[ObjectInfo]:
-        """Yield stored objects in ascending key order, starting after ``after``."""
+    def iter_objects(
+        self, after: uuid.UUID | None = None, unreadable: list[str] | None = None
+    ) -> Iterator[ObjectInfo]:
+        """Yield stored objects in ascending key order, starting after ``after``.
+
+        Entries whose name or metadata cannot be read are skipped; pass a list
+        as ``unreadable`` to collect their directory names instead of losing them.
+        """
         after_hex = after.hex if after else ""
         if not self.objects_dir.is_dir():
             return
@@ -245,6 +251,8 @@ class BlobStore:
                     try:
                         info = self.stat(uuid.UUID(hex=key))
                     except (ValueError, CorruptObject):
+                        if unreadable is not None:
+                            unreadable.append(key)
                         continue
                     if info is not None:
                         yield info

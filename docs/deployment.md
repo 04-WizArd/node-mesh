@@ -148,6 +148,7 @@ front of it. Then set `DJANGO_HTTPS=true`, `DJANGO_TRUST_X_FORWARDED_PROTO=true`
 |---|---|
 | `make cluster-ps` | container state and health |
 | `make cluster-status` | node health, free space, copies per node, under-replicated files |
+| `make cluster-storage` | read-only: per storage node, its state, its `/data` volume, and each stored object's id, size and recorded SHA-256 |
 | `make cluster-logs SERVICE=reconciler` | follow one service's JSON logs (omit `SERVICE` for all) |
 | `make cluster-reconcile` | run one reconciliation cycle now |
 | `make cluster-restart SERVICE=node-2` | restart one service |

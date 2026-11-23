@@ -30,6 +30,29 @@ make cluster-status   # nodes and replication, from the coordinator's metadata
 The summary line counts files per status and the **under-replicated** ones,
 meaning files with fewer healthy copies than the replication factor.
 
+To see what each node actually holds on disk, rather than what the
+coordinator's metadata says, run:
+
+```bash
+make cluster-storage
+```
+
+For every storage-node service, this shows:
+- the container state and the Docker volume mounted at `/data`;
+- the number and total size of stored objects;
+- each object's id (the file id in the coordinator), its size and the SHA-256
+  recorded when it was written.
+
+The command is read-only:
+- it reads each node's metadata through `docker compose exec`, without
+  re-hashing or modifying anything;
+- it reports a stopped or failing node explicitly, and exits with a non-zero
+  status if any node could not be inspected;
+- it lists entries whose metadata is missing or corrupt separately.
+
+To verify the bytes themselves, use `make cluster-rescan NODE=node-N`: the
+reconciler then re-hashes that node's copies.
+
 The reconciler runs every `NODEMESH_RECONCILE_INTERVAL` seconds (default 30).
 Each cycle logs one JSON line with counters, which you can read with
 `make cluster-logs SERVICE=reconciler`:
