@@ -262,3 +262,7 @@ scripts/          génération de l'environnement, nœuds locaux, inventaire de 
 docs/             development, deployment, operations, architecture, consistency, API, security, testing
 AUDIT.md          l'audit d'origine de la version académique (historique)
 ```
+
+## Licence
+
+NodeMesh est distribué sous [licence MIT](LICENSE).

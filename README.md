@@ -240,3 +240,7 @@ scripts/          env generation, local nodes, DB inventory, demo, benchmark
 docs/             development, deployment, operations, architecture, consistency, API, security, testing
 AUDIT.md          the original audit of the academic version (historical)
 ```
+
+## License
+
+NodeMesh is released under the [MIT License](LICENSE).
